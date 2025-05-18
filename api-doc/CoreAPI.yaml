@@ -1,0 +1,1617 @@
+###############################################
+# 1. ScholarAI Core API (OpenAPI 3.1)         #
+###############################################
+openapi: 3.1.0
+info:
+  title: ScholarAI Core API
+  version: 1.0.0
+  description: |
+    Public HTTP interface for ScholarAI.
+    **Core (Spring Boot)** handles identity, projects, library CRUD, job orchestration.
+    Heavy AI work is delegated to internal Celery workers over RabbitMQ; the client
+    interacts only with the Core API and polls `/jobs/{id}` for progress.
+servers:
+  - url: https://api.scholarai.com/core
+    description: Production
+  - url: http://localhost:8080
+    description: Local dev
+security:
+  - BearerAuth: []
+tags:
+  - name: Auth
+  - name: Projects
+  - name: Library
+  - name: Jobs
+  - name: Tasks
+  - name: QA
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    ##########################
+    # Generic
+    ##########################
+    ErrorEnvelope:
+      type: object
+      required: [success, error]
+      properties:
+        success:
+          type: boolean
+          enum: [false]
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              examples: ["AUTH_INVALID"]
+            message:
+              type: string
+              examples: ["Email or password incorrect."]
+    Pagination:
+      type: object
+      required: [items]
+      properties:
+        nextCursor:
+          type: [string, "null"]
+        items:
+          type: array
+          items: {}
+    Job:
+      type: object
+      required: [id, type, status, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          examples: ["FETCH_PAPERS"]
+        status:
+          type: string
+          enum: [PENDING, RUNNING, SUCCEEDED, FAILED]
+        progress:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+        result:
+          type: [object, "null"]
+        createdAt:
+          type: string
+          format: date-time
+        finishedAt:
+          type: [string, "null"]
+          format: date-time
+    ##########################
+    # Auth
+    ##########################
+    RegisterRequest:
+      type: object
+      required: [name, email, password]
+      properties:
+        name: { type: string, examples: ["Jane Doe"] }
+        email: { type: string, format: email }
+        password: { type: string, format: password }
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, format: password }
+    ##########################
+    # Projects & Library
+    ##########################
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        email: { type: string, format: email }
+    Project:
+      type: object
+      required: [id, name, domain, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        domain: { type: string }
+        topics:
+          type: array
+          items: { type: string }
+        createdAt: { type: string, format: date-time }
+    LibraryItem:
+      type: object
+      required: [id, title, status]
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        doi: { type: [string, "null"] }
+        status:
+          type: string
+          enum: [RAW, EXTRACTED, SUMMARIZED, SCORED]
+        meta: { anyOf: [{ $ref: '#/components/schemas/PaperMeta'}, { type: "null" }] }
+        extraction: { anyOf: [{ $ref: '#/components/schemas/Extraction'}, { type: "null" }] }
+        summary: { anyOf: [{ $ref: '#/components/schemas/Summary'}, { type: "null" }] }
+        score: { anyOf: [{ $ref: '#/components/schemas/Score'}, { type: "null" }] }
+    PaperMeta:
+      type: object
+      properties:
+        authors: { type: array, items: { type: string } }
+        publicationDate: { type: string, format: date }
+        venue: { type: string }
+    Extraction:
+      type: object
+      properties:
+        abstract: { type: string }
+        methods: { type: string }
+        conclusions: { type: string }
+    Summary:
+      type: object
+      properties:
+        text: { type: string }
+    Score:
+      type: object
+      properties:
+        value: { type: number, format: float }
+        rationale: { type: string }
+    GapInsight:
+      type: object
+      properties:
+        description: { type: string }
+    ReminderTask:
+      type: object
+      required: [id, title, status, dueAt]
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        status:
+          type: string
+          enum: [TO_READ, READING, DONE]
+        dueAt: { type: string, format: date-time }
+        calendarEventId: { type: [string, "null"] }
+
+paths:
+  ##########################
+  # Auth
+  ##########################
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Register new researcher
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegisterRequest' }
+      responses:
+        "201":
+          description: Registered – verify email next
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: 
+                    type: boolean
+                    examples: [true]
+                  message:
+                    type: string
+                    examples: ["Registration successful. Please verify your email."]
+        "409":
+          description: Duplicate email
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        "400":
+          description: Invalid input
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+  /auth/verify-otp:
+    post:
+      tags: [Auth]
+      summary: Confirm OTP
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, otp]
+              properties:
+                email: { type: string, format: email }
+                otp: { type: string, examples: ["123456"] }
+      responses:
+        "200":
+          description: Verified
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    examples: [true]
+                  message:
+                    type: string
+                    examples: ["Email verified successfully"]
+        "400":
+          description: Invalid OTP
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        "404":
+          description: Email not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+      responses:
+        "200":
+          description: Success
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+              description: HttpOnly refresh token cookie
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    examples: [true]
+                  accessToken: { type: string }
+                  expiresIn: { type: integer, examples: [900] }
+                  user:
+                    $ref: '#/components/schemas/User'
+        "401":
+          description: Invalid credentials
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        "400":
+          description: Invalid input
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Rotate JWT using refresh cookie
+      responses:
+        "200":
+          description: New access token issued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    examples: [true]
+                  accessToken: { type: string }
+                  expiresIn: { type: integer }
+        "401":
+          description: Invalid refresh token
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Invalidate refresh token
+      responses:
+        "204":
+          description: Logged out
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Get current user profile
+      responses:
+        "200":
+          description: Current user profile
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    examples: [true]
+                  user:
+                    $ref: '#/components/schemas/User'
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    put:
+      tags: [Auth]
+      summary: Replace current user profile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                email: { type: string, format: email }
+      responses:
+        "200":
+          description: User profile replaced
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    examples: [true]
+                  user:
+                    $ref: '#/components/schemas/User'
+        "400":
+          description: Invalid input
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        "409":
+          description: Email already in use
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  ##########################
+  # Projects
+  ##########################
+  /projects:
+    get:
+      tags: [Projects]
+      summary: List projects
+      description: Retrieves a list of projects for the authenticated user.
+      parameters:
+        - in: query
+          name: cursor
+          schema: { type: string }
+      responses:
+        "200":
+          description: A paginated list of projects.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    examples: [true]
+                  data:
+                    allOf:
+                      - $ref: '#/components/schemas/Pagination'
+                      - properties:
+                          items:
+                            items: { $ref: '#/components/schemas/Project' }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    post:
+      tags: [Projects]
+      summary: Create project
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, domain]
+              properties:
+                name: { type: string }
+                domain: { type: string }
+                topics:
+                  type: array
+                  items: { type: string }
+      responses:
+        "201":
+          headers:
+            Location:
+              description: URL of the newly created project.
+              schema: { type: string }
+              examples:
+                projectLocation:
+                  value: /projects/123e4567-e89b-12d3-a456-426614174000
+          description: Project created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    examples: [true]
+                  project:
+                    $ref: '#/components/schemas/Project'
+        "409":
+          description: Duplicate name
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        "400":
+          description: Invalid input
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /projects/{projectId}:
+    get:
+      tags: [Projects]
+      summary: Get project
+      description: Retrieves a specific project by its ID.
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The requested project.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    examples: [true]
+                  project:
+                    $ref: '#/components/schemas/Project'
+        "404":
+          description: Project not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    patch:
+      tags: [Projects]
+      summary: Update project
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                domain: { type: string }
+                topics:
+                  type: array
+                  items: { type: string }
+      responses:
+        "200":
+          description: Project updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    examples: [true]
+                  project:
+                    $ref: '#/components/schemas/Project'
+        "404":
+          description: Project not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        "400":
+          description: Invalid input
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    delete:
+      tags: [Projects]
+      summary: Delete project
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204":
+          description: Project deleted
+        "404":
+          description: Project not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    put:
+      tags: [Projects]
+      summary: Replace project
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Project' }
+      responses:
+        "200":
+          description: Project replaced
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    examples: [true]
+                  project:
+                    $ref: '#/components/schemas/Project'
+        "404":
+          description: Project not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        "400":
+          description: Invalid input
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  ##########################
+  # Library
+  ##########################
+  /projects/{projectId}/library:
+    get:
+      tags: [Library]
+      summary: List library items
+      description: Retrieves a list of library items for a specific project.
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema: { type: string, format: uuid }
+        - in: query
+          name: cursor
+          schema: { type: string }
+      responses:
+        "200":
+          description: A paginated list of library items.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    examples: [true]
+                  data:
+                    allOf:
+                      - $ref: '#/components/schemas/Pagination'
+                      - properties:
+                          items:
+                            items: { $ref: '#/components/schemas/LibraryItem' }
+        "404":
+          description: Project not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    post:
+      tags: [Library]
+      summary: Upload PDF for processing
+      description: |
+        Uploads a PDF file for processing. This endpoint is used after:
+        1. Finding relevant papers through the WebSearch agent
+        2. Downloading the PDFs from the provided links
+        3. Uploading the downloaded PDFs here for processing
+        
+        The system will:
+        1. Store the PDF
+        2. Extract metadata (title, authors, etc.)
+        3. Queue an extraction job to process the PDF content
+        
+        Example workflow:
+        1. Call `/projects/{projectId}/library/fetch-papers` to get paper links
+        2. Download PDFs from the returned links
+        3. Upload each PDF through this endpoint
+        4. Monitor the extraction job status through `/jobs/{id}`
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: The PDF file to process
+      responses:
+        "201":
+          headers:
+            Location:
+              description: URL of the initiated job for file extraction.
+              schema: { type: string }
+              examples:
+                jobLocation:
+                  value: /jobs/550e8400-e29b-41d4-a716-446655440000
+          description: File accepted; extraction job started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    examples: [true]
+                  jobId:
+                    type: string
+                    format: uuid
+        "400":
+          description: Invalid file
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        "404":
+          description: Project not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /projects/{projectId}/library/fetch-papers:
+    post:
+      tags: [Library]
+      summary: Trigger WebSearch agent to find relevant papers
+      description: |
+        Initiates a search for relevant papers based on the project's domain and topics.
+        The WebSearch agent will:
+        1. Search academic databases and repositories
+        2. Return metadata and direct PDF links for each paper
+        3. The client should download these PDFs and upload them through the library endpoint
+        
+        Example response from the job result:
+        ```json
+        {
+          "papers": [
+            {
+              "title": "Example Paper Title",
+              "authors": ["Author 1", "Author 2"],
+              "doi": "10.1234/example",
+              "pdfUrl": "https://example.com/paper.pdf",
+              "metadata": {
+                "publicationDate": "2023-01-01",
+                "venue": "Example Conference"
+              }
+            }
+          ]
+        }
+        ```
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                count:
+                  type: integer
+                  minimum: 1
+                  maximum: 100
+                  default: 20
+      responses:
+        "202":
+          headers:
+            Location:
+              description: URL of the initiated WebSearch agent job.
+              schema: { type: string }
+              examples:
+                jobLocation:
+                  value: /jobs/550e8400-e29b-41d4-a716-446655440000
+          description: Job queued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    examples: [true]
+                  jobId:
+                    type: string
+                    format: uuid
+        "404":
+          description: Project not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /projects/{projectId}/library/{itemId}/extract:
+    post:
+      tags: [Library]
+      summary: Extract PDF sections
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema: { type: string, format: uuid }
+        - in: path
+          name: itemId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "202":
+          headers:
+            Location:
+              description: URL of the initiated extraction job.
+              schema: { type: string }
+              examples:
+                jobLocation:
+                  value: /jobs/550e8400-e29b-41d4-a716-446655440000
+          description: Extraction job queued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    examples: [true]
+                  jobId:
+                    type: string
+                    format: uuid
+        "404":
+          description: Project or item not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /projects/{projectId}/library/{itemId}/summarise:
+    post:
+      tags: [Library]
+      summary: Summarise extracted text
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema: { type: string, format: uuid }
+        - in: path
+          name: itemId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "202":
+          headers:
+            Location:
+              description: URL of the initiated summary job.
+              schema: { type: string }
+          description: Summary job queued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    examples: [true]
+                  jobId:
+                    type: string
+                    format: uuid
+        "404":
+          description: Project or item not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /projects/{projectId}/score-papers:
+    post:
+      tags: [Library]
+      summary: Score papers with Critic agent
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "202":
+          headers:
+            Location:
+              description: URL of the initiated scoring job.
+              schema: { type: string }
+              examples:
+                jobLocation:
+                  value: /jobs/550e8400-e29b-41d4-a716-446655440000
+          description: Scoring job queued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    examples: [true]
+                  jobId:
+                    type: string
+                    format: uuid
+        "404":
+          description: Project not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /projects/{projectId}/gap-analysis:
+    post:
+      tags: [Library]
+      summary: Run gap + topic analysis
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "202":
+          headers:
+            Location:
+              description: URL of the initiated gap analysis job.
+              schema: { type: string }
+              examples:
+                jobLocation:
+                  value: /jobs/550e8400-e29b-41d4-a716-446655440000
+          description: Gap analysis job queued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    examples: [true]
+                  jobId:
+                    type: string
+                    format: uuid
+        "404":
+          description: Project not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /projects/{projectId}/library/{itemId}:
+    put:
+      tags: [Library]
+      summary: Replace library item
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema: { type: string, format: uuid }
+        - in: path
+          name: itemId
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LibraryItem' }
+      responses:
+        "200":
+          description: Library item replaced.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    examples: [true]
+                  item:
+                    $ref: '#/components/schemas/LibraryItem'
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /projects/{projectId}/library/{itemId}/meta:
+    put:
+      tags: [Library]
+      summary: Replace library item metadata
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema: { type: string, format: uuid }
+        - in: path
+          name: itemId
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PaperMeta' }
+      responses:
+        "200":
+          description: Metadata replaced.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    examples: [true]
+                  meta:
+                    $ref: '#/components/schemas/PaperMeta'
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /projects/{projectId}/library/{itemId}/status:
+    put:
+      tags: [Library]
+      summary: Set library item status
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema: { type: string, format: uuid }
+        - in: path
+          name: itemId
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  enum: [RAW, EXTRACTED, SUMMARIZED, SCORED]
+      responses:
+        "200":
+          description: Status updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    examples: [true]
+                  status:
+                    type: string
+                    enum: [RAW, EXTRACTED, SUMMARIZED, SCORED]
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /projects/{projectId}/library/{itemId}/notes:
+    put:
+      tags: [Library]
+      summary: Replace library item notes
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema: { type: string, format: uuid }
+        - in: path
+          name: itemId
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                notes: { type: string }
+      responses:
+        "200":
+          description: Notes replaced.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    examples: [true]
+                  notes:
+                    type: string
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    
+  ##########################
+  # Contextual QA
+  ##########################
+  /projects/{projectId}/qa:
+    post:
+      tags: [QA]
+      summary: Ask question against selected docs
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [question, itemIds]
+              properties:
+                question: { type: string, examples: ["What dataset split did Smith et al. use?"] }
+                itemIds:
+                  type: array
+                  items: { type: string, format: uuid }
+      responses:
+        "200":
+          description: QA job created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    examples: [true]
+                  job:
+                    $ref: '#/components/schemas/Job'
+        "400":
+          description: Invalid input
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        "404":
+          description: Project not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /projects/{projectId}/qa/history:
+    get:
+      tags: [QA]
+      summary: List past QA interactions for a project
+      description: Retrieves a list of past Question & Answering jobs initiated for the project.
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema: { type: string, format: uuid }
+        - in: query
+          name: cursor
+          schema: { type: string }
+      responses:
+        "200":
+          description: A paginated list of QA jobs.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    examples: [true]
+                  data:
+                    allOf:
+                      - $ref: '#/components/schemas/Pagination'
+                      - properties:
+                          items:
+                            type: array
+                            items: { $ref: '#/components/schemas/Job' }
+        "404":
+          description: Project not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  ##########################
+  # Tasks & Reminders
+  ##########################
+  /projects/{projectId}/tasks:
+    get:
+      tags: [Tasks]
+      summary: List tasks/reminders
+      description: Retrieves a list of tasks or reminders for a specific project.
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: An array of tasks or reminders.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    examples: [true]
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/ReminderTask' }
+        "404":
+          description: Project not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    post:
+      tags: [Tasks]
+      summary: Create task/reminder
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, status, dueAt]
+              properties:
+                title: { type: string }
+                status:
+                  type: string
+                  enum: [TO_READ, READING, DONE]
+                dueAt: { type: string, format: date-time }
+      responses:
+        "201":
+          description: Task created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    examples: [true]
+                  task:
+                    $ref: '#/components/schemas/ReminderTask'
+        "400":
+          description: Invalid input
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        "404":
+          description: Project not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    put:
+      tags: [Tasks]
+      summary: Bulk replace tasks
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items: { $ref: '#/components/schemas/ReminderTask' }
+      responses:
+        "200":
+          description: Tasks replaced
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    examples: [true]
+                  tasks:
+                    type: array
+                    items: { $ref: '#/components/schemas/ReminderTask' }
+        "400":
+          description: Invalid input
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        "404":
+          description: Project not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /projects/{projectId}/tasks/{taskId}:
+    patch:
+      tags: [Tasks]
+      summary: Update task
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema: { type: string, format: uuid }
+        - in: path
+          name: taskId
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string }
+                status:
+                  type: string
+                  enum: [TO_READ, READING, DONE]
+                dueAt: { type: string, format: date-time }
+      responses:
+        "200":
+          description: Task updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    examples: [true]
+                  task:
+                    $ref: '#/components/schemas/ReminderTask'
+        "400":
+          description: Invalid input
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        "404":
+          description: Project or task not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    delete:
+      tags: [Tasks]
+      summary: Delete task
+      description: Deletes a specific task or reminder.
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema: { type: string, format: uuid }
+        - in: path
+          name: taskId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204":
+          description: Task deleted
+        "404":
+          description: Project or task not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    put:
+      tags: [Tasks]
+      summary: Replace task
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema: { type: string, format: uuid }
+        - in: path
+          name: taskId
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReminderTask' }
+      responses:
+        "200":
+          description: Task replaced
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    examples: [true]
+                  task:
+                    $ref: '#/components/schemas/ReminderTask'
+        "400":
+          description: Invalid input
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        "404":
+          description: Project or task not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /projects/{projectId}/tasks/{taskId}/status:
+    put:
+      tags: [Tasks]
+      summary: Set task status
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema: { type: string, format: uuid }
+        - in: path
+          name: taskId
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  enum: [TO_READ, READING, DONE]
+      responses:
+        "200":
+          description: Status updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    examples: [true]
+                  status:
+                    type: string
+                    enum: [TO_READ, READING, DONE]
+        "400":
+          description: Invalid input
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        "404":
+          description: Project or task not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  ##########################
+  # Jobs & SSE stream
+  ##########################
+  /jobs/{id}:
+    get:
+      tags: [Jobs]
+      summary: Poll job status
+      description: Retrieves the current status and details of a specific job.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Job details retrieved successfully.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    examples: [true]
+                  job:
+                    $ref: '#/components/schemas/Job'
+        "404":
+          description: Job not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+  /jobs/stream:
+    get:
+      tags: [Jobs]
+      summary: Subscribe to job events (SSE)
+      description: Establishes an SSE (Server-Sent Events) connection to stream job status updates.
+      parameters:
+        - in: query
+          name: after
+          schema: { type: string, format: date-time }
+      responses:
+        "200":
+          description: text/event-stream
+          content:
+            text/event-stream:
+              schema:
+                type: object
+                properties:
+                  event:
+                    type: string
+                    examples: ["job_update"]
+                  data:
+                    $ref: '#/components/schemas/Job'
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }

@@ -1,0 +1,261 @@
+asyncapi: 2.6.0
+info:
+  title: ScholarAI Agent Task Bus
+  version: 1.0.0
+  description: |
+    AMQP contract between Spring-Boot Core and Python Celery workers.
+    • Core **publishes** task messages on `agent.tasks.*` topics.
+    • Workers **publish** result messages on `agent.results.*` topics.
+    • Correlation via `jobId` (UUID) which maps to `/jobs/{id}` in the Core HTTP API.
+
+defaultContentType: application/json
+
+servers:
+  rabbitmq:
+    url: amqp://rabbitmq.scholarai.local
+    protocol: amqp
+    description: Internal RabbitMQ broker
+
+channels:
+  ###################################################
+  # WebSearch agent ---------------------------------
+  ###################################################
+  agent.tasks.fetch_papers:
+    description: Task queue for WebSearch agent
+    publish:
+      operationId: publishFetchPapersTask
+      summary: Core posts a request to retrieve paper metadata.
+      message:
+        $ref: '#/components/messages/FetchPapersTask'
+  agent.results.fetch_papers:
+    description: Result topic for WebSearch agent
+    subscribe:
+      operationId: subscribeFetchPapersResult
+      summary: Core consumes results of WebSearch agent.
+      message:
+        $ref: '#/components/messages/FetchPapersResult'
+
+  ###################################################
+  # Extraction agent -------------------------------
+  ###################################################
+  agent.tasks.extract:
+    publish:
+      operationId: publishExtractTask
+      summary: Core requests PDF/HTML extraction.
+      message: { $ref: '#/components/messages/ExtractTask' }
+  agent.results.extract:
+    subscribe:
+      operationId: subscribeExtractResult
+      summary: Extraction results.
+      message: { $ref: '#/components/messages/ExtractResult' }
+
+  ###################################################
+  # Summariser + critique + fact-check -------------
+  ###################################################
+  agent.tasks.summarise:
+    publish:
+      operationId: publishSummariseTask
+      summary: Core requests summary generation.
+      message: { $ref: '#/components/messages/SummariseTask' }
+  agent.results.summarise:
+    subscribe:
+      operationId: subscribeSummariseResult
+      summary: Summaries with critique & fact-check info.
+      message: { $ref: '#/components/messages/SummariseResult' }
+
+  ###################################################
+  # Critic / scoring agent -------------------------
+  ###################################################
+  agent.tasks.score_papers:
+    publish:
+      operationId: publishScoreTask
+      summary: Core requests Critic score computation.
+      message: { $ref: '#/components/messages/ScoreTask' }
+  agent.results.score_papers:
+    subscribe:
+      operationId: subscribeScoreResult
+      summary: Score results.
+      message: { $ref: '#/components/messages/ScoreResult' }
+
+  ###################################################
+  # Gap & Topic analysis agent ---------------------
+  ###################################################
+  agent.tasks.gap_analysis:
+    publish:
+      operationId: publishGapTask
+      summary: Core requests gap + topic analysis.
+      message: { $ref: '#/components/messages/GapTask' }
+  agent.results.gap_analysis:
+    subscribe:
+      operationId: subscribeGapResult
+      summary: Gap insights and topic suggestions.
+      message: { $ref: '#/components/messages/GapResult' }
+
+components:
+  messages:
+    ########################################
+    # WebSearch ----------------------------
+    ########################################
+    FetchPapersTask:
+      name: FetchPapersTask
+      payload:
+        type: object
+        required: [jobId, projectId, count]
+        properties:
+          jobId:      { type: string, format: uuid }
+          projectId:  { type: string, format: uuid }
+          count:      { type: integer, minimum: 1, maximum: 100 }
+    FetchPapersResult:
+      name: FetchPapersResult
+      payload:
+        type: object
+        required: [jobId, papers]
+        properties:
+          jobId: { type: string, format: uuid }
+          papers:
+            type: array
+            items: { $ref: '#/components/schemas/PaperMeta' }
+
+    ########################################
+    # Extraction ---------------------------
+    ########################################
+    ExtractTask:
+      name: ExtractTask
+      payload:
+        type: object
+        required: [jobId, itemId]
+        properties:
+          jobId: { type: string, format: uuid }
+          itemId: { type: string, format: uuid }
+    ExtractResult:
+      name: ExtractResult
+      payload:
+        type: object
+        required: [jobId, extraction]
+        properties:
+          jobId:     { type: string, format: uuid }
+          extraction: { $ref: '#/components/schemas/Extraction' }
+
+    ########################################
+    # Summariser ---------------------------
+    ########################################
+    SummariseTask:
+      name: SummariseTask
+      payload:
+        type: object
+        required: [jobId, itemId]
+        properties:
+          jobId: { type: string, format: uuid }
+          itemId: { type: string, format: uuid }
+    SummariseResult:
+      name: SummariseResult
+      payload:
+        type: object
+        required: [jobId, summary]
+        properties:
+          jobId:   { type: string, format: uuid }
+          summary: { $ref: '#/components/schemas/Summary' }
+          critique:
+            anyOf:
+              - $ref: '#/components/schemas/Critique'
+              - type: "null"
+          factCheck:
+            type: array
+            items: { $ref: '#/components/schemas/FactCheckItem' }
+
+    ########################################
+    # Critic / scoring ---------------------
+    ########################################
+    ScoreTask:
+      name: ScoreTask
+      payload:
+        type: object
+        required: [jobId, projectId]
+        properties:
+          jobId:     { type: string, format: uuid }
+          projectId: { type: string, format: uuid }
+    ScoreResult:
+      name: ScoreResult
+      payload:
+        type: object
+        required: [jobId, scores]
+        properties:
+          jobId: { type: string, format: uuid }
+          scores:
+            type: array
+            items:
+              type: object
+              required: [itemId, value]
+              properties:
+                itemId:   { type: string, format: uuid }
+                value:    { type: number, format: float }
+                rationale: { type: string }
+
+    ########################################
+    # Gap analysis -------------------------
+    ########################################
+    GapTask:
+      name: GapTask
+      payload:
+        type: object
+        required: [jobId, projectId]
+        properties:
+          jobId:     { type: string, format: uuid }
+          projectId: { type: string, format: uuid }
+    GapResult:
+      name: GapResult
+      payload:
+        type: object
+        required: [jobId, insights, topics]
+        properties:
+          jobId: { type: string, format: uuid }
+          insights:
+            type: array
+            items: { $ref: '#/components/schemas/GapInsight' }
+          topics:
+            type: array
+            items: { type: string }
+
+  schemas:
+    ########################################
+    # Domain objects -----------------------
+    ########################################
+    PaperMeta:
+      type: object
+      required: [title, url]
+      properties:
+        title: { type: string }
+        url:   { type: string }
+        doi:   { type: [string, "null"] }
+        authors: { type: array, items: { type: string } }
+        publicationDate: { type: [string, "null"], format: date }
+        venue: { type: [string, "null"] }
+
+    Extraction:
+      type: object
+      properties:
+        abstract:    { type: string }
+        methods:     { type: string }
+        conclusions: { type: string }
+
+    Summary:
+      type: object
+      properties:
+        text: { type: string }
+
+    Critique:
+      type: string
+      description: One-paragraph critical appraisal.
+
+    FactCheckItem:
+      type: object
+      required: [claim, verdict]
+      properties:
+        claim:   { type: string }
+        verdict: { type: string, enum: [SUPPORTED, REFUTED, UNCLEAR] }
+        source:  { type: [string, "null"] }
+
+    GapInsight:
+      type: object
+      properties:
+        description: { type: string }
