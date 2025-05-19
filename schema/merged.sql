@@ -114,7 +114,56 @@ CREATE TABLE reminders (
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- 5. GAP ANALYSIS (from gap-analysis.sql)
+-- 5. WEB SEARCH (from websearch.sql) - MOVED UP to be before tables that reference papers
+
+-- PAPERS & METADATA
+CREATE TABLE papers (
+  id                UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+  project_id        UUID        NOT NULL,                           -- references core DB project
+  doi               VARCHAR(255) NOT NULL,
+  title             TEXT        NOT NULL,
+  publication_date  DATE,
+  venue             VARCHAR(255),
+  publisher         VARCHAR(255),
+  peer_reviewed     BOOLEAN     NOT NULL DEFAULT FALSE,
+  citation_count    INTEGER     NOT NULL DEFAULT 0,
+  code_url          TEXT,
+  dataset_url       TEXT,
+  paper_url         TEXT,
+  pdf_content       BYTEA,                                     -- raw PDF blob
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (project_id, doi)
+);
+
+-- AUTHORS & MAPPING
+CREATE TABLE authors (
+  id             UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+  name           TEXT        NOT NULL,
+  orcid          VARCHAR(19),
+  gs_profile_url TEXT,
+  affiliation    TEXT,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE paper_authors (
+  paper_id     UUID NOT NULL REFERENCES papers(id)   ON DELETE CASCADE,
+  author_id    UUID NOT NULL REFERENCES authors(id)  ON DELETE CASCADE,
+  author_order INTEGER NOT NULL,
+  PRIMARY KEY (paper_id, author_id)
+);
+
+-- PAPER SCORING (CRITIC)
+CREATE TABLE paper_scores (
+  id           UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+  paper_id     UUID        NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
+  score        NUMERIC(10,4) NOT NULL,
+  details      JSONB,                                   -- breakdown of scoring factors
+  scored_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 6. GAP ANALYSIS (from gap-analysis.sql)
 
 -- GAP ANALYSIS RUNS
 CREATE TABLE gap_analyses (
@@ -165,12 +214,12 @@ CREATE TABLE topic_suggestions (
   updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- 6. SUMMARIZER (from summarizer.sql)
+-- 7. SUMMARIZER (from summarizer.sql)
 
 -- EXTRACTOR: raw text + section info
 CREATE TABLE extracted_documents (
   id           UUID          PRIMARY KEY DEFAULT uuid_generate_v4(),
-  paper_id     UUID          NOT NULL,                                 -- FK to papers.id in WebSearch DB
+  paper_id     UUID          NOT NULL REFERENCES papers(id) ON DELETE CASCADE,  -- FK to papers.id
   full_text    TEXT          NOT NULL,                                 -- entire extracted text
   sections     JSONB         NOT NULL,                                 -- e.g. [{ "heading":"Introduction","start":0,"end":200 }, …]
   created_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
@@ -180,7 +229,7 @@ CREATE TABLE extracted_documents (
 -- SUMMARIZER: human‐friendly summaries
 CREATE TABLE human_summaries (
   id                              UUID          PRIMARY KEY DEFAULT uuid_generate_v4(),
-  paper_id                        UUID          NOT NULL,               -- FK to papers.id in WebSearch DB
+  paper_id                        UUID          NOT NULL REFERENCES papers(id) ON DELETE CASCADE,  -- FK to papers.id
   problem_motivation              TEXT,                                 -- 1–2 sentence gap & why it matters
   key_contributions               TEXT[]        NOT NULL DEFAULT ARRAY[]::TEXT[],
   method_overview                 TEXT,                                 -- short paragraph or diagram description
@@ -196,64 +245,12 @@ CREATE TABLE human_summaries (
 -- SUMMARIZER: machine‐friendly structured facts
 CREATE TABLE structured_facts (
   id           UUID          PRIMARY KEY DEFAULT uuid_generate_v4(),
-  paper_id     UUID          NOT NULL,                                 -- FK to papers.id in WebSearch DB
+  paper_id     UUID          NOT NULL REFERENCES papers(id) ON DELETE CASCADE,  -- FK to papers.id
   facts        JSONB         NOT NULL,                                 -- the full paper_summary.json payload
   created_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
   updated_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
   UNIQUE (paper_id)
 );
-
--- 7. WEB SEARCH (from websearch.sql)
-
--- PAPERS & METADATA
-CREATE TABLE papers (
-  id                UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
-  project_id        UUID        NOT NULL,                           -- references core DB project
-  doi               VARCHAR(255) NOT NULL,
-  title             TEXT        NOT NULL,
-  publication_date  DATE,
-  venue             VARCHAR(255),
-  publisher         VARCHAR(255),
-  peer_reviewed     BOOLEAN     NOT NULL DEFAULT FALSE,
-  citation_count    INTEGER     NOT NULL DEFAULT 0,
-  code_url          TEXT,
-  dataset_url       TEXT,
-  paper_url         TEXT,
-  pdf_content       BYTEA,                                     -- raw PDF blob
-  created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  UNIQUE (project_id, doi)
-);
-
--- AUTHORS & MAPPING
-CREATE TABLE authors (
-  id             UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
-  name           TEXT        NOT NULL,
-  orcid          VARCHAR(19),
-  gs_profile_url TEXT,
-  affiliation    TEXT,
-  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE paper_authors (
-  paper_id     UUID NOT NULL REFERENCES papers(id)   ON DELETE CASCADE,
-  author_id    UUID NOT NULL REFERENCES authors(id)  ON DELETE CASCADE,
-  author_order INTEGER NOT NULL,
-  PRIMARY KEY (paper_id, author_id)
-  -- No created_at/updated_at as it's a join table
-);
-
--- PAPER SCORING (CRITIC)
-CREATE TABLE paper_scores (
-  id           UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
-  paper_id     UUID        NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
-  score        NUMERIC(10,4) NOT NULL,
-  details      JSONB,                                   -- breakdown of scoring factors
-  scored_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
-  -- No updated_at as scores are usually immutable once created
-);
-
 
 -- 8. QA (from qa.sql)
 

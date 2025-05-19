@@ -17,7 +17,7 @@ CREATE TABLE human_summaries (
   paper_id                        UUID          NOT NULL,               -- FK to papers.id in WebSearch DB
   problem_motivation              TEXT,                                 -- 1–2 sentence gap & why it matters
   key_contributions               TEXT[]        NOT NULL DEFAULT ARRAY[]::TEXT[],  
-                                                        -- bullet points (“propose…”, “demonstrate…”)
+                                                        -- bullet points ("propose…", "demonstrate…")
   method_overview                 TEXT,                                 -- short paragraph or diagram description
   data_experimental_setup         TEXT,                                 -- datasets, baselines, hardware, protocol
   headline_results                JSONB         DEFAULT '[]'::JSONB,   -- e.g. [{ "method":"X","baseline":"Y","gain":"3%" }, …]
@@ -50,8 +50,10 @@ $$ LANGUAGE plpgsql;
 
 -- 6. Attach trigger to keep updated_at current
 DO $$
+DECLARE
+  tbl TEXT;
 BEGIN
-  FOR tbl IN ARRAY['extracted_documents','human_summaries','structured_facts'] LOOP
+  FOREACH tbl IN ARRAY ARRAY['extracted_documents','human_summaries','structured_facts'] LOOP
     EXECUTE format(
       'CREATE TRIGGER trg_%1$s_updated
          BEFORE UPDATE ON %1$s

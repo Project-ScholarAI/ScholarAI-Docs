@@ -5,8 +5,8 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 --    each session belongs to a specific user (and optionally a project)
 CREATE TABLE qa_sessions (
   id           UUID          PRIMARY KEY DEFAULT uuid_generate_v4(),
-  user_id      UUID          NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  project_id   UUID          REFERENCES projects(id) ON DELETE CASCADE,
+  user_id      UUID          NOT NULL,                    -- references users.id
+  project_id   UUID,                                       -- references projects.id
   title        TEXT,                          -- optional label
   created_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
   updated_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW()
@@ -56,8 +56,10 @@ END;
 $$ LANGUAGE plpgsql;
 
 DO $$
+DECLARE
+  tbl TEXT;
 BEGIN
-  FOR tbl IN ARRAY['qa_sessions','document_chunks'] LOOP
+  FOREACH tbl IN ARRAY ARRAY['qa_sessions','document_chunks'] LOOP
     EXECUTE format(
       'CREATE TRIGGER trg_%1$s_updated
          BEFORE UPDATE ON %1$s

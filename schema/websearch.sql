@@ -59,8 +59,10 @@ $$ LANGUAGE plpgsql;
 
 -- Attach trigger to tables with updated_at
 DO $$
+DECLARE
+  tbl TEXT;
 BEGIN
-  FOR tbl IN ARRAY['papers','authors'] LOOP
+  FOREACH tbl IN ARRAY ARRAY['papers','authors'] LOOP
     EXECUTE format(
       'CREATE TRIGGER trg_%1$s_updated_at
          BEFORE UPDATE ON %1$s

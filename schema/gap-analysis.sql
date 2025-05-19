@@ -60,8 +60,10 @@ $$ LANGUAGE plpgsql;
 
 -- 6. Attach trigger to keep updated_at current
 DO $$
+DECLARE
+  tbl TEXT;
 BEGIN
-  FOR tbl IN ARRAY['gap_analyses','gaps','topic_suggestions'] LOOP
+  FOREACH tbl IN ARRAY ARRAY['gap_analyses','gaps','topic_suggestions'] LOOP
     EXECUTE format(
       'CREATE TRIGGER trg_%1$s_updated
          BEFORE UPDATE ON %1$s

@@ -1,4 +1,3 @@
-
 -- enable UUID generation
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
@@ -117,8 +116,10 @@ $$ LANGUAGE plpgsql;
 
 -- Attach for every table with updated_at
 DO $$
+DECLARE
+  tbl TEXT;
 BEGIN
-  FOR tbl IN ARRAY['users','projects','async_jobs','reading_list','reminders','refresh_tokens','social_accounts'] LOOP
+  FOREACH tbl IN ARRAY ARRAY['users','projects','async_jobs','reading_list','reminders','refresh_tokens','social_accounts'] LOOP
     EXECUTE format(
       'CREATE TRIGGER trg_%1$s_updated
          BEFORE UPDATE ON %1$s
