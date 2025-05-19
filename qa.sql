@@ -32,13 +32,13 @@ CREATE TABLE document_chunks (
   paper_id     UUID          NOT NULL,                      -- FK to papers.id
   chunk_index  INTEGER       NOT NULL,                      -- order within paper
   chunk_text   TEXT          NOT NULL,
-  embedding    VECTOR(1536),                                -- optional similarity embeddings
+  embedding    REAL[],                                -- optional similarity embeddings (originally VECTOR(1536), requires pgvector extension)
   created_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
   updated_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
   UNIQUE(paper_id, chunk_index)
 );
 
--- 6. SESSION CONTEXT: which chunks are part of each session’s context
+-- 6. SESSION CONTEXT: which chunks are part of each session's context
 CREATE TABLE session_context_chunks (
   session_id       UUID      NOT NULL REFERENCES qa_sessions(id)   ON DELETE CASCADE,
   chunk_id         UUID      NOT NULL REFERENCES document_chunks(id) ON DELETE CASCADE,
